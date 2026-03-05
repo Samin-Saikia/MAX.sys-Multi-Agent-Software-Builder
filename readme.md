@@ -1,77 +1,94 @@
-# MAX.sys — Multi-Agent Pipeline System
+# MAX.sys
 
-> **Architect → Build → Test → Document.** A fully automated, human-in-the-loop AI pipeline that takes a project idea from concept to documented codebase using specialized LLM agents.
-
----
-
-## Overview
-
-MAX.sys is a multi-agent development pipeline powered by [Groq](https://groq.com/) , Meta's Llama 4 Scout and groq/compound. You describe a project idea in plain English, and four specialized AI agents handle the rest — each one passing its output to the next, with user approval gates at the critical stages.
+> **Idea → Architecture → Code → Tests → Docs → Running App**
+> A multi-agent AI pipeline that takes a plain-English project idea all the way to a running, downloadable codebase — with human approval gates at every critical step.
 
 ---
 
 ## Interface Preview
 
 <p align="center">
-  <img src="assets/Screenshot_9.png" alt="MAXUS Interface" width="900"/>
+  <img src="assets/Screenshot_10.png" alt="MAXUS Interface" width="900"/>
 </p>
 
 ---
 
+
+## What It Does
+
+You type an idea. MAX.sys does the rest:
+
 ```
-Your Idea
-   │
-   ▼
-┌──────────────┐     approve / improve
-│  ARCHITECT   │ ──────────────────────► revise
-│  designs doc │
-└──────┬───────┘
-       │ approved
-       ▼
-┌──────────────┐     approve / improve
-│   BUILDER    │ ──────────────────────► revise
-│  writes code │
-└──────┬───────┘
-       │ approved
-       ▼
-┌──────────────┐
-│    TESTER    │  (auto — no gate)
-│  finds bugs  │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│    WRITER    │  (auto — no gate)
-│  writes docs │
-└──────┬───────┘
-       │
-       ▼
-    Done ✓
+You: "build a todo app with local storage"
+        │
+        ▼
+  ┌─────────────┐
+  │  ARCHITECT  │  Designs the full system — folder structure,
+  │             │  tech stack, module breakdown, API design
+  └──────┬──────┘
+         │  ✋ You review & approve (or request changes)
+         ▼
+  ┌─────────────┐
+  │   BUILDER   │  Writes every file from the architecture doc.
+  │             │  Production-ready code, no placeholders.
+  └──────┬──────┘
+         │  ✋ You review & approve (or request changes)
+         ▼
+  ┌───────────┐   ┌──────────┐   ┌──────────────┐
+  │  TESTER   │ → │  WRITER  │ → │    RUNNER    │
+  │ bug report│   │ README.md│   │ serve/proxy  │
+  └───────────┘   └──────────┘   └──────────────┘
+         │                              │
+         └──────── auto, no gates ──────┘
+                          │
+                   ✓ Files on disk
+                   ✓ Live preview in browser
+                   ✓ ZIP download
 ```
 
 ---
 
 ## Features
 
-- **4 specialized agents** — each with a focused system prompt and a single job
-- **User approval gates** after Architect and Builder — approve to advance or type feedback to iterate
-- **Automatic hand-off** — once the build is approved, Tester and Writer run back-to-back without interruption
-- **Revision loop** — request improvements at any gate; the agent revises and re-presents
-- **Intent detection** — the backend classifies your message as APPROVE or IMPROVE using the LLM (with heuristic fallback), so you never have to click special buttons
-- **Rich frontend** — pipeline progress tracker, markdown rendering, syntax-highlighted code blocks with copy buttons, thinking indicators
-- **Stateful pipeline** — full stage machine on the server; reloading the page reconnects to the current state
-- **One-click reset** — wipe the session and start a new project instantly
+- **4 specialized AI agents** — Architect, Builder, Tester, Writer, each with a single focused job
+- **Human-in-the-loop approval gates** after Architect and Builder — approve or iterate as many times as you need
+- **Smart intent detection** — type naturally; the backend classifies your message as APPROVE or IMPROVE automatically, no special commands
+- **Automatic file writing** — parses the builder's output and writes every file to `projects/<name>/` on disk
+- **Smart project type detection** — detects Static, Flask, Node, or Other from the written files automatically
+- **Universal preview** — every project type served through MAX's own server, no guessing ports:
+  - Static HTML/JS/CSS → served directly at `/preview/<name>/`
+  - Flask / FastAPI / Node → reverse-proxied at `/proxy/<name>/`
+- **Live terminal** — real-time subprocess output streamed to the browser via Server-Sent Events
+- **File explorer** — browse and syntax-highlight every written file in the UI
+- **ZIP download** — download the entire project as a `.zip` in one click
+- **Robust file parser** — handles 6+ LLM output formats with multi-pattern regex and an automatic fallback mode
+- **Debug endpoint** — `GET /debug/parse` shows exactly what the parser extracted if something looks wrong
 
 ---
 
 ## Agents
 
-| Agent | Role | User Gate |
+| Agent | Job | Gate |
 |---|---|---|
-| **ARCHITECT** | Produces a complete architecture document — tech stack, folder structure, module breakdown, API design, implementation notes | ✅ Yes |
-| **BUILDER** | Implements the full codebase from the architecture document — production-ready, no placeholders | ✅ Yes |
-| **TESTER** | Static analysis, bug report, fixed files for critical issues, unit/integration test cases, quality score | ❌ Auto |
-| **WRITER** | Generates a professional `README.md` from the architecture, code, and test report | ❌ Auto |
+| **ARCHITECT** | Complete architecture doc — tech stack, folder tree, module breakdown, API design, implementation notes, and run metadata (`PROJECT_NAME`, `RUN_COMMAND`, `INSTALL_COMMAND`, `PORT`) | ✅ User approves |
+| **BUILDER** | Implements every file from the architecture doc. Full production-quality code, no stubs or TODOs | ✅ User approves |
+| **TESTER** | Static analysis, bug report table, fixed code for critical issues, unit test cases, quality score 1–10 | ❌ Auto |
+| **WRITER** | Generates a complete `README.md` from the architecture, code, and test report | ❌ Auto |
+
+---
+
+## Preview — How It Works
+
+MAX.sys never hardcodes a port in the browser. It detects the project type and routes the preview through its own server at `localhost:5000`:
+
+| Detected type | How detected | Served at |
+|---|---|---|
+| `static` | Has `.html` files or only web-safe extensions | `/preview/<name>/` directly |
+| `flask` | A `.py` file imports flask / fastapi / uvicorn | `/proxy/<name>/` → reverse-proxied to subprocess |
+| `node` | `package.json` exists | `/proxy/<name>/` → reverse-proxied to subprocess |
+| `other` | Python with no web framework | Subprocess runs, no iframe preview |
+
+The iframe always points to a MAX-hosted URL — it works regardless of what port the generated app binds to internally.
 
 ---
 
@@ -80,10 +97,10 @@ Your Idea
 | Layer | Technology |
 |---|---|
 | LLM API | [Groq](https://console.groq.com/) |
-| Models | `meta-llama/llama-4-scout-17b-16e-instruct` and `groq/compound`|
+| Models | `meta-llama/llama-4-scout-17b-16e-instruct` and  `groq/compound`  |
 | Backend | Python · Flask · Flask-CORS |
-| Frontend | Vanilla HTML/CSS/JS (single file) |
-| Markdown | [marked.js](https://marked.js.org/) |
+| Frontend | Vanilla HTML / CSS / JS — single file, zero build step |
+| Markdown rendering | [marked.js](https://marked.js.org/) |
 | Syntax highlighting | [highlight.js](https://highlightjs.org/) |
 | Config | python-dotenv |
 
@@ -91,40 +108,39 @@ Your Idea
 
 ## Prerequisites
 
-- Python **3.9+**
-- A [Groq API key](https://console.groq.com/keys) (free tier works)
-- `pip` (comes with Python)
+- Python **3.8+**
+- A [Groq API key](https://console.groq.com/keys) — free tier is sufficient
+- `pip`
 
 ---
 
-## Installation & Setup
+## Installation
 
 **1. Clone the repository**
 
 ```bash
 git clone https://github.com/Samin-Saikia/MAX.sys-Multi-Agent-Software-Builder
-cd max-sys
 ```
 
-**2. Install dependencies**
+**2. Install Python dependencies**
 
 ```bash
 pip install flask flask-cors groq python-dotenv
 ```
 
-**3. Create your `.env` file**
+**3. Configure your API key**
 
 ```bash
 cp .env.example .env
 ```
 
-Then open `.env` and add your key:
+Open `.env` and add your key:
 
 ```env
 GROQ_API_KEY=your_groq_api_key_here
 ```
 
-**4. Run the server**
+**4. Start the server**
 
 ```bash
 python app.py
@@ -132,50 +148,67 @@ python app.py
 
 **5. Open the UI**
 
-Navigate to [http://localhost:5000](http://localhost:5000) in your browser.
+```
+http://localhost:5000
+```
 
 ---
 
 ## Usage
 
-### Starting a project
+### Describe a project
 
-Type your project idea into the input field and press **Enter**.
+Type your idea into the input field and press **Enter**.
 
 ```
-Build a REST API for a task management app with user auth, 
-CRUD for tasks, and PostgreSQL as the database.
+a REST API for a task manager with user auth and SQLite
 ```
-
-The **ARCHITECT** agent will generate a full architecture document.
+```
+vanilla JS pomodoro timer, no frameworks, clean UI
+```
+```
+flask dashboard showing live CPU and memory usage with charts
+```
 
 ### At an approval gate
 
 After the Architect or Builder responds, an approval bar appears:
 
-- Click **✓ Approve** to advance to the next stage
-- Click **✏ Improve** (or just type) to request revisions
+- **✓ Approve** — advance to the next stage
+- **✏ Improve** (or just type) — send feedback for a revision
 
-```
-# Example improvement requests:
-"Add WebSocket support for real-time updates"
-"Use SQLite instead of PostgreSQL"
-"Add rate limiting to the auth endpoints"
-```
+```bash
+# Architecture gate examples
+"use PostgreSQL instead of SQLite"
+"add a WebSocket endpoint for live updates"
+"split auth into a separate blueprint"
 
-### Watching the pipeline run
-
-The header tracker shows live progress:
-
-```
-[1 ARCHITECT ✓] → [2 BUILDER ✓] → [3 TESTER ⚙] → [4 WRITER]
+# Build gate examples
+"the login route is missing input validation"
+"add a requirements.txt"
+"the CSS file is empty, fill it in"
 ```
 
-Once you approve the build, the Tester and Writer run automatically. The final response contains the full test report and a ready-to-use `README.md`.
+You can iterate as many times as needed at each gate. Only when you approve does the pipeline advance.
 
-### Starting a new project
+### After you approve the build
 
-Click **↺ reset** in the top right at any time to wipe the session and start fresh.
+The pipeline runs the remaining steps automatically:
+
+1. **Tester** reviews the code and produces a bug report + test cases
+2. **Writer** generates the project `README.md`
+3. All files are written to `projects/<name>/`
+4. The project is started (server apps) or served directly (static apps)
+5. The preview iframe loads in the right panel
+6. The ZIP is ready to download
+
+### Right panel
+
+| Tab | Contents |
+|---|---|
+| **▶ Terminal** | Live subprocess output — install logs, server startup, runtime errors |
+| **⬡ Files** | File tree with syntax-highlighted viewer for every written file |
+| **◈ Preview** | Embedded live preview of the running app |
 
 ---
 
@@ -183,10 +216,13 @@ Click **↺ reset** in the top right at any time to wipe the session and start f
 
 ```
 max-sys/
-├── app.py          # Flask backend — pipeline state machine, agent runners, routes
-├── index.html      # Frontend UI — single file, no build step required
-├── .env            # Your Groq API key (never commit this)
-├── .env.example    # Template for the env file
+├── app.py          # Flask backend — pipeline state machine, agents,
+│                   # file parser, runner, preview/proxy routes
+├── index.html      # Frontend — single HTML file, no build step
+├── projects/       # Generated projects written here (auto-created)
+│   └── <name>/     # One subfolder per built project
+├── .env            # Groq API key (never commit this)
+├── .env.example    # Key template
 └── README.md       # This file
 ```
 
@@ -195,37 +231,79 @@ max-sys/
 ## API Reference
 
 ### `POST /chat`
+Main pipeline endpoint. Accepts user messages and advances the state machine.
 
-Send a user message. The backend determines the current stage and routes accordingly.
-
-**Request body:**
+**Request**
 ```json
-{ "message": "your message here" }
+{ "message": "build a weather app using the open-meteo API" }
 ```
 
-**Response:**
+**Response**
 ```json
 {
-  "stage": "await_arch_approval",
-  "agent": "ARCHITECT",
-  "message": "... agent output ...",
+  "stage":       "await_arch_approval",
+  "agent":       "ARCHITECT",
+  "message":     "...",
   "waiting_for": "approval",
-  "pipeline_status": {
-    "arch": true,
-    "build": false,
-    "test": false,
-    "write": false
-  }
+  "pipeline_status": { "arch": true, "build": false, "test": false, "write": false },
+  "project":     { "name": "", "port": null }
 }
 ```
 
-### `POST /reset`
+---
 
-Wipes all pipeline state and returns to `idle`.
+### `GET /logs`
+Server-Sent Events stream of live subprocess output. Consumed by the terminal panel.
+
+---
+
+### `GET /files`
+Returns all files in the current project folder with paths, contents, and sizes.
+
+---
+
+### `GET /download`
+Streams the current project folder as a `.zip` attachment.
+
+---
+
+### `GET /preview/<name>/` · `GET /preview/<name>/<path>`
+Serves static project files directly from `projects/<name>/`. Used for HTML/JS/CSS projects.
+
+---
+
+### `GET /proxy/<name>/` · `GET /proxy/<name>/<path>`
+Reverse-proxies requests to the running subprocess on its internal port. Used for Flask and Node projects.
+
+---
+
+### `GET /debug/parse`
+Returns what the file parser found in the current build output. Useful when a project write looks incomplete.
+
+```json
+{
+  "build_length":   8432,
+  "files_parsed":   ["app.py", "templates/index.html", "requirements.txt"],
+  "fences_found":   4,
+  "fence_previews": [...],
+  "build_preview":  "..."
+}
+```
+
+---
+
+### `POST /stop`
+Terminates the running subprocess. Pipeline state is preserved.
+
+---
+
+### `POST /reset`
+Kills any subprocess and wipes all pipeline state back to `idle`. The `projects/` folder is kept on disk.
+
+---
 
 ### `GET /state`
-
-Returns the current pipeline stage, full conversation history, and status flags.
+Returns the current stage, full conversation history, and pipeline status flags.
 
 ---
 
@@ -233,32 +311,35 @@ Returns the current pipeline stage, full conversation history, and status flags.
 
 | Stage | Description |
 |---|---|
-| `idle` | Waiting for the initial project idea |
-| `await_arch_approval` | Architecture generated — waiting for user approval or feedback |
-| `builder` | Builder is generating the codebase |
-| `await_build_approval` | Build complete — waiting for user approval or feedback |
+| `idle` | Waiting for a project idea |
+| `await_arch_approval` | Architecture ready — waiting for user approval or feedback |
+| `builder` | Builder is generating code |
+| `await_build_approval` | Code ready — waiting for user approval or feedback |
 | `tester` | Tester running automatically |
-| `writer` | Writer running automatically |
+| `writer` | Writer generating README automatically |
+| `running` | Files written, subprocess starting |
 | `done` | Pipeline complete — type a new idea to restart |
 
 ---
 
 ## Environment Variables
 
-| Variable | Description | Required |
+| Variable | Required | Description |
 |---|---|---|
-| `GROQ_API_KEY` | Your Groq API key from [console.groq.com](https://console.groq.com/keys) | ✅ Yes |
+| `GROQ_API_KEY` | ✅ | From [console.groq.com/keys](https://console.groq.com/keys) |
 
 ---
 
 ## Known Limitations
 
-- **No persistent storage** — pipeline state is in-memory; restarting the server resets it
-- **Single session** — designed for one active pipeline at a time
-- **Token limits** — very large projects may hit Groq's `max_tokens` cap of 4096 per call; complex builds may be truncated
-- **No streaming** — responses arrive all at once after the model finishes
+- **Single session** — one active pipeline at a time; designed for solo local use
+- **In-memory state** — restarting `app.py` resets the pipeline (the `projects/` folder is preserved on disk)
+- **Token cap** — Groq's 4096-token output limit may truncate very large projects; complex apps may require a follow-up build or manual completion
+- **Proxy limitations** — the reverse proxy rewrites HTML-embedded URLs but not JS-constructed ones; SPAs with full client-side routing may behave unexpectedly
+- **No authentication** — do not expose port 5000 on a public network
 
 ---
+
 ## Author
 
 **Samin Saikia**
@@ -272,14 +353,13 @@ Built as an experimental research project exploring multi-agent software develop
 
 ---
 
+
 ## Contributing
 
-Contributions are welcome! To get started:
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/your-feature`
-3. Commit your changes: `git commit -m "add: your feature description"`
-4. Push to the branch: `git push origin feature/your-feature`
+1. Fork the repo
+2. Create a branch: `git checkout -b feature/your-feature`
+3. Commit: `git commit -m "add: your feature"`
+4. Push: `git push origin feature/your-feature`
 5. Open a Pull Request
 
 Please keep PRs focused — one feature or fix per PR.
@@ -288,10 +368,10 @@ Please keep PRs focused — one feature or fix per PR.
 
 ## License
 
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE) for details.
 
 ---
 
 <div align="center">
-  Built with MAX.sys · Powered by Groq + Llama 4
+  <strong>MAX.sys</strong> &nbsp;·&nbsp; Groq + Llama 4 Scout &nbsp;·&nbsp; MIT License
 </div>
