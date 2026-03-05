@@ -8,6 +8,16 @@
 
 MAX.sys is a multi-agent development pipeline powered by [Groq](https://groq.com/) , Meta's Llama 4 Scout and groq/compound. You describe a project idea in plain English, and four specialized AI agents handle the rest — each one passing its output to the next, with user approval gates at the critical stages.
 
+---
+
+## Interface Preview
+
+<p align="center">
+  <img src="assets/Screenshot_9.png" alt="MAXUS Interface" width="900"/>
+</p>
+
+---
+
 ```
 Your Idea
    │
@@ -92,7 +102,7 @@ Your Idea
 **1. Clone the repository**
 
 ```bash
-git clone https://github.com/yourusername/max-sys.git
+git clone https://github.com/Samin-Saikia/MAX.sys-Multi-Agent-Software-Builder
 cd max-sys
 ```
 
