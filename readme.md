@@ -379,5 +379,5 @@ MIT — see [LICENSE](LICENSE) for details.
 ---
 
 <div align="center">
-  <strong>MAX.sys</strong> &nbsp;·&nbsp; Groq + Llama 4 Scout &nbsp;·&nbsp; MIT
+  <strong>MAX.sys</strong> &nbsp;·&nbsp; groq/compound + Llama 4 Scout &nbsp;·&nbsp; MIT
 </div>
