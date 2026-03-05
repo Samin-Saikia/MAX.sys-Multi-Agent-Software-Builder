@@ -1,0 +1,937 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MAX Pipeline</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+
+:root{
+  --bg:       #0e1114;
+  --surface:  #161a1f;
+  --surface2: #1c2128;
+  --border:   #252d35;
+  --border2:  #2e3740;
+  --text:     #cdd9e5;
+  --muted:    #56697a;
+  --dim:      #2a3540;
+
+  --arc:   #58a6ff;
+  --build: #3fb950;
+  --test:  #e3b341;
+  --write: #bc8cff;
+  --user:  #79c0ff;
+  --error: #f85149;
+
+  --arc-bg:   rgba(88,166,255,0.07);
+  --build-bg: rgba(63,185,80,0.07);
+  --test-bg:  rgba(227,179,65,0.07);
+  --write-bg: rgba(188,140,255,0.07);
+}
+
+body{
+  font-family:'IBM Plex Sans',sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  height:100vh;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  font-size:13px;
+}
+
+/* ── HEADER ─────────────────────────────── */
+header{
+  height:52px;
+  background:var(--surface);
+  border-bottom:1px solid var(--border);
+  display:flex;
+  align-items:center;
+  padding:0 18px;
+  gap:0;
+  flex-shrink:0;
+  position:relative;
+  z-index:10;
+}
+
+.logo{
+  font-family:'IBM Plex Mono',monospace;
+  font-weight:600;
+  font-size:15px;
+  color:var(--text);
+  letter-spacing:0.12em;
+  margin-right:20px;
+}
+.logo em{color:var(--build);font-style:normal;}
+
+/* Pipeline tracker */
+.pipeline-track{
+  display:flex;
+  align-items:center;
+  gap:0;
+  flex:1;
+}
+
+.track-step{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:6px 14px;
+  border-radius:5px;
+  transition:all 0.25s;
+  cursor:default;
+  position:relative;
+}
+
+.step-num{
+  width:22px;height:22px;
+  border-radius:50%;
+  border:1.5px solid var(--border2);
+  display:flex;align-items:center;justify-content:center;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:10px;
+  font-weight:600;
+  color:var(--muted);
+  transition:all 0.25s;
+  flex-shrink:0;
+}
+
+.step-label{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:10px;
+  letter-spacing:0.06em;
+  color:var(--muted);
+  transition:all 0.25s;
+}
+
+.track-arrow{
+  color:var(--border2);
+  font-size:12px;
+  padding:0 2px;
+  flex-shrink:0;
+}
+
+/* Active step */
+.track-step.active .step-num{border-color:currentColor;color:inherit;}
+.track-step.active .step-label{color:inherit;}
+.track-step.active-ARCHITECT{color:var(--arc);}
+.track-step.active-BUILDER  {color:var(--build);}
+.track-step.active-TESTER   {color:var(--test);}
+.track-step.active-WRITER   {color:var(--write);}
+
+/* Done step */
+.track-step.done .step-num{
+  background:var(--build);
+  border-color:var(--build);
+  color:#0e1114;
+}
+.track-step.done .step-label{color:var(--build);}
+.track-step.done .step-num::after{content:'✓';}
+
+/* Pulsing when running */
+.track-step.running .step-num{
+  animation:stepPulse 1s infinite;
+}
+@keyframes stepPulse{
+  0%,100%{box-shadow:0 0 0 0 currentColor;}
+  50%{box-shadow:0 0 0 4px transparent;}
+}
+
+.header-right{
+  margin-left:auto;
+  display:flex;
+  align-items:center;
+  gap:10px;
+}
+
+.conn-pill{
+  display:flex;align-items:center;gap:6px;
+  background:var(--surface2);
+  border:1px solid var(--border);
+  border-radius:20px;
+  padding:4px 10px;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:9px;
+  color:var(--muted);
+}
+.conn-dot{width:6px;height:6px;border-radius:50%;background:var(--build);box-shadow:0 0 5px var(--build);}
+.conn-dot.off{background:var(--error);box-shadow:0 0 5px var(--error);}
+
+.reset-btn{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:10px;
+  background:none;
+  border:1px solid var(--border2);
+  border-radius:5px;
+  color:var(--muted);
+  padding:5px 12px;
+  cursor:pointer;
+  transition:all 0.15s;
+  letter-spacing:0.04em;
+}
+.reset-btn:hover{color:var(--error);border-color:var(--error);}
+
+/* ── MESSAGES ────────────────────────────── */
+#messages{
+  flex:1;
+  overflow-y:auto;
+  padding:20px;
+  display:flex;
+  flex-direction:column;
+  gap:16px;
+  scroll-behavior:smooth;
+}
+#messages::-webkit-scrollbar{width:4px;}
+#messages::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
+
+/* Welcome */
+.welcome{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  flex:1;
+  gap:14px;
+  padding:48px 20px;
+  text-align:center;
+}
+
+.welcome-logo{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:36px;
+  font-weight:600;
+  letter-spacing:0.15em;
+  color:var(--text);
+}
+.welcome-logo em{color:var(--build);font-style:normal;}
+
+.welcome-sub{
+  font-size:12px;
+  color:var(--muted);
+  max-width:420px;
+  line-height:1.8;
+  font-family:'IBM Plex Mono',monospace;
+}
+
+.flow-diagram{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  margin-top:4px;
+  flex-wrap:wrap;
+  justify-content:center;
+}
+
+.flow-node{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:10px;
+  padding:5px 12px;
+  border-radius:4px;
+  border:1px solid;
+  letter-spacing:0.06em;
+}
+
+.flow-arrow{color:var(--muted);font-size:11px;}
+.flow-check{font-size:12px;}
+
+/* Message rows */
+.msg{
+  display:flex;
+  gap:12px;
+  animation:slideIn 0.2s ease-out;
+  max-width:900px;
+  width:100%;
+  align-self:center;
+}
+@keyframes slideIn{
+  from{opacity:0;transform:translateY(5px);}
+  to{opacity:1;transform:translateY(0);}
+}
+
+.msg.user-msg{justify-content:flex-end;}
+
+.avatar{
+  width:32px;height:32px;
+  border-radius:7px;
+  flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:10px;
+  font-weight:600;
+  margin-top:1px;
+}
+
+.av-user  {background:rgba(121,192,255,0.12);border:1px solid rgba(121,192,255,0.25);color:var(--user);}
+.av-arc   {background:var(--arc-bg);  border:1px solid rgba(88,166,255,0.25); color:var(--arc);}
+.av-build {background:var(--build-bg);border:1px solid rgba(63,185,80,0.25);  color:var(--build);}
+.av-test  {background:var(--test-bg); border:1px solid rgba(227,179,65,0.25); color:var(--test);}
+.av-write {background:var(--write-bg);border:1px solid rgba(188,140,255,0.25);color:var(--write);}
+
+.msg-body{flex:1;min-width:0;}
+.user-msg .msg-body{display:flex;flex-direction:column;align-items:flex-end;}
+
+.msg-meta{
+  display:flex;align-items:center;gap:8px;
+  margin-bottom:6px;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:10px;
+}
+.user-msg .msg-meta{flex-direction:row-reverse;}
+
+.meta-name{font-weight:600;letter-spacing:0.06em;}
+.meta-ARCHITECT{color:var(--arc);}
+.meta-BUILDER  {color:var(--build);}
+.meta-TESTER   {color:var(--test);}
+.meta-WRITER   {color:var(--write);}
+.meta-user     {color:var(--user);}
+.meta-time     {color:var(--dim);font-size:9px;}
+
+/* Bubble */
+.bubble{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:3px 10px 10px 10px;
+  padding:14px 16px;
+  line-height:1.75;
+  color:var(--text);
+}
+.user-msg .bubble{
+  background:rgba(121,192,255,0.07);
+  border-color:rgba(121,192,255,0.2);
+  border-radius:10px 3px 10px 10px;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:12px;
+}
+
+/* Agent header tag inside bubble */
+.agent-tag{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:9px;
+  padding:3px 9px;
+  border-radius:3px;
+  border:1px solid;
+  letter-spacing:0.08em;
+  margin-bottom:12px;
+}
+.tag-ARCHITECT{color:var(--arc);  border-color:rgba(88,166,255,0.35); background:var(--arc-bg);}
+.tag-BUILDER  {color:var(--build);border-color:rgba(63,185,80,0.35);  background:var(--build-bg);}
+.tag-TESTER   {color:var(--test); border-color:rgba(227,179,65,0.35); background:var(--test-bg);}
+.tag-WRITER   {color:var(--write);border-color:rgba(188,140,255,0.35);background:var(--write-bg);}
+
+/* ── APPROVAL PROMPT ─────────────────────── */
+.approval-bar{
+  max-width:900px;
+  width:100%;
+  align-self:center;
+  background:var(--surface2);
+  border:1px solid var(--border2);
+  border-top:2px solid var(--build);
+  border-radius:8px;
+  padding:14px 16px;
+  display:flex;
+  align-items:center;
+  gap:12px;
+  animation:slideIn 0.2s;
+}
+
+.approval-text{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:11px;
+  color:var(--muted);
+  flex:1;
+}
+
+.approval-text strong{
+  display:block;
+  color:var(--text);
+  font-size:12px;
+  margin-bottom:3px;
+}
+
+.approve-btn{
+  background:var(--build);
+  border:none;
+  border-radius:6px;
+  color:#0e1114;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:11px;
+  font-weight:600;
+  padding:8px 18px;
+  cursor:pointer;
+  transition:all 0.15s;
+  white-space:nowrap;
+  letter-spacing:0.04em;
+}
+.approve-btn:hover{background:#56d364;}
+
+.feedback-btn{
+  background:none;
+  border:1px solid var(--border2);
+  border-radius:6px;
+  color:var(--muted);
+  font-family:'IBM Plex Mono',monospace;
+  font-size:11px;
+  padding:8px 14px;
+  cursor:pointer;
+  transition:all 0.15s;
+  white-space:nowrap;
+}
+.feedback-btn:hover{color:var(--text);border-color:var(--muted);}
+
+/* ── THINKING ────────────────────────────── */
+.thinking{
+  display:flex;align-items:flex-start;gap:12px;
+  max-width:900px;width:100%;align-self:center;
+  animation:slideIn 0.2s;
+}
+.thinking-bubble{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:3px 10px 10px 10px;
+  padding:12px 16px;
+  display:flex;align-items:center;gap:12px;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:11px;
+  color:var(--muted);
+}
+.thinking-stage{
+  font-size:9px;letter-spacing:0.08em;
+  padding:2px 7px;border-radius:3px;
+  margin-left:6px;
+}
+.dots{display:flex;gap:4px;}
+.dots span{width:5px;height:5px;border-radius:50%;background:var(--build);animation:dot 1.2s infinite;}
+.dots span:nth-child(2){animation-delay:.2s;}
+.dots span:nth-child(3){animation-delay:.4s;}
+@keyframes dot{0%,100%{opacity:.2;transform:scale(.7);}50%{opacity:1;transform:scale(1);}}
+
+/* ── MARKDOWN ────────────────────────────── */
+.md h1,.md h2,.md h3{font-family:'IBM Plex Mono',monospace;margin:16px 0 7px;color:var(--text);}
+.md h1{font-size:15px;border-bottom:1px solid var(--border);padding-bottom:7px;}
+.md h2{font-size:13px;color:var(--arc);}
+.md h3{font-size:12px;color:var(--test);}
+.md p{margin:7px 0;}
+.md ul,.md ol{padding-left:20px;margin:6px 0;}
+.md li{margin:3px 0;line-height:1.65;}
+.md strong{color:var(--write);font-weight:600;}
+.md em{color:var(--arc);font-style:italic;}
+.md a{color:var(--build);text-decoration:none;border-bottom:1px solid rgba(63,185,80,0.3);}
+.md blockquote{border-left:3px solid var(--border2);padding:7px 12px;color:var(--muted);margin:9px 0;background:rgba(255,255,255,0.02);border-radius:0 4px 4px 0;}
+.md hr{border:none;border-top:1px solid var(--border);margin:14px 0;}
+.md table{width:100%;border-collapse:collapse;margin:10px 0;font-size:11px;}
+.md th{background:rgba(255,255,255,0.04);padding:5px 10px;border:1px solid var(--border);color:var(--arc);font-family:'IBM Plex Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:.07em;}
+.md td{padding:5px 10px;border:1px solid var(--border);color:var(--muted);}
+.md tr:hover td{background:rgba(88,166,255,0.03);color:var(--text);}
+.md :not(pre)>code{background:rgba(88,166,255,0.1);color:var(--arc);padding:1px 5px;border-radius:3px;font-family:'IBM Plex Mono',monospace;font-size:11px;border:1px solid rgba(88,166,255,0.18);}
+
+/* ── CODE BLOCKS ──────────────────────────── */
+.cw{margin:12px 0;border:1px solid var(--border);border-radius:7px;overflow:hidden;}
+.ch{display:flex;align-items:center;padding:7px 12px;background:rgba(255,255,255,0.03);border-bottom:1px solid var(--border);gap:8px;}
+.clang{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--build);letter-spacing:.1em;text-transform:uppercase;}
+.cpbtn{margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:9px;background:none;border:1px solid var(--border2);border-radius:3px;color:var(--muted);padding:2px 8px;cursor:pointer;transition:all .15s;}
+.cpbtn:hover{color:var(--text);border-color:var(--muted);}
+.cpbtn.ok{color:var(--build);border-color:var(--build);}
+.cw pre{margin:0!important;padding:12px 14px!important;background:#0d1117!important;overflow-x:auto;font-size:11.5px!important;line-height:1.65!important;}
+.cw code{font-family:'IBM Plex Mono',monospace!important;font-size:11.5px!important;}
+
+/* ── INPUT ───────────────────────────────── */
+#input-wrap{
+  padding:12px 20px 16px;
+  flex-shrink:0;
+  border-top:1px solid var(--border);
+  background:var(--bg);
+}
+
+.input-box{
+  max-width:900px;
+  margin:0 auto;
+  background:var(--surface);
+  border:1px solid var(--border2);
+  border-radius:9px;
+  padding:10px 12px;
+  display:flex;
+  align-items:flex-end;
+  gap:10px;
+  transition:border-color .2s;
+}
+.input-box:focus-within{border-color:var(--build);}
+
+textarea{
+  flex:1;
+  background:none;
+  border:none;
+  outline:none;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:12px;
+  color:var(--text);
+  resize:none;
+  max-height:120px;
+  min-height:22px;
+  line-height:1.6;
+}
+textarea::placeholder{color:var(--dim);}
+
+.send-btn{
+  width:34px;height:34px;
+  background:var(--build);
+  border:none;border-radius:7px;
+  color:#0e1114;
+  cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  font-size:15px;font-weight:bold;
+  flex-shrink:0;
+  transition:all .15s;
+}
+.send-btn:hover{background:#56d364;transform:translateY(-1px);}
+.send-btn:disabled{background:var(--border2);cursor:not-allowed;transform:none;color:var(--muted);}
+
+.input-hint{
+  max-width:900px;
+  margin:6px auto 0;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:9px;
+  color:var(--dim);
+  display:flex;align-items:center;gap:8px;
+  padding:0 2px;
+}
+
+.stage-hint{
+  margin-left:auto;
+  font-size:9px;
+  letter-spacing:.06em;
+}
+.stage-hint.idle     {color:var(--muted);}
+.stage-hint.architect{color:var(--arc);}
+.stage-hint.builder  {color:var(--build);}
+.stage-hint.tester   {color:var(--test);}
+.stage-hint.writer   {color:var(--write);}
+.stage-hint.done     {color:var(--build);}
+
+/* ── TOAST ───────────────────────────────── */
+#toast{
+  position:fixed;
+  bottom:72px;left:50%;
+  transform:translateX(-50%);
+  background:var(--error);
+  color:#fff;
+  padding:8px 18px;
+  border-radius:6px;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:11px;
+  display:none;
+  z-index:999;
+  animation:slideIn .2s;
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">MAX<em>.</em>sys</div>
+
+  <div class="pipeline-track">
+    <div class="track-step" id="step-ARCHITECT" data-agent="ARCHITECT">
+      <div class="step-num">1</div>
+      <span class="step-label">ARCHITECT</span>
+    </div>
+    <div class="track-arrow">›</div>
+    <div class="track-step" id="step-BUILDER" data-agent="BUILDER">
+      <div class="step-num">2</div>
+      <span class="step-label">BUILDER</span>
+    </div>
+    <div class="track-arrow">›</div>
+    <div class="track-step" id="step-TESTER" data-agent="TESTER">
+      <div class="step-num">3</div>
+      <span class="step-label">TESTER</span>
+    </div>
+    <div class="track-arrow">›</div>
+    <div class="track-step" id="step-WRITER" data-agent="WRITER">
+      <div class="step-num">4</div>
+      <span class="step-label">WRITER</span>
+    </div>
+  </div>
+
+  <div class="header-right">
+    <div class="conn-pill">
+      <div class="conn-dot" id="conn-dot"></div>
+      <span id="conn-label">flask:5000</span>
+    </div>
+    <button class="reset-btn" onclick="doReset()">↺ reset</button>
+  </div>
+</header>
+
+<div id="messages">
+  <div class="welcome" id="welcome">
+    <div class="welcome-logo">MAX<em>.</em>sys</div>
+    <div class="welcome-sub">
+      Describe your project idea — the pipeline will take it all the way from architecture to documented code.
+    </div>
+    <div class="flow-diagram">
+      <div class="flow-node" style="color:var(--arc);border-color:rgba(88,166,255,0.4)">ARCHITECT</div>
+      <span class="flow-arrow">→</span>
+      <span class="flow-check">✋</span>
+      <span class="flow-arrow">→</span>
+      <div class="flow-node" style="color:var(--build);border-color:rgba(63,185,80,0.4)">BUILDER</div>
+      <span class="flow-arrow">→</span>
+      <span class="flow-check">✋</span>
+      <span class="flow-arrow">→</span>
+      <div class="flow-node" style="color:var(--test);border-color:rgba(227,179,65,0.4)">TESTER</div>
+      <span class="flow-arrow">→</span>
+      <div class="flow-node" style="color:var(--write);border-color:rgba(188,140,255,0.4)">WRITER</div>
+    </div>
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);margin-top:4px;">
+      ✋ = user approval gate · you can also request improvements at each gate
+    </div>
+  </div>
+</div>
+
+<div id="input-wrap">
+  <div class="input-box">
+    <textarea id="input" placeholder="Describe your project idea..." rows="1"
+      onkeydown="handleKey(event)" oninput="resize(this)"></textarea>
+    <button class="send-btn" id="send-btn" onclick="send()">➤</button>
+  </div>
+  <div class="input-hint">
+    Enter to send · Alt+Enter newline
+    <span class="stage-hint idle" id="stage-hint">● idle — waiting for idea</span>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const API = 'http://localhost:5000';
+let busy = false;
+let currentWaiting = null; // "approval" | null
+let currentStage   = "idle";
+
+const AGENT_META = {
+  ARCHITECT: { label:'MAX ARCHITECT', av:'ARC',   avCls:'av-arc',   color:'var(--arc)'   },
+  BUILDER:   { label:'MAX BUILDER',   av:'BLD',   avCls:'av-build',  color:'var(--build)' },
+  TESTER:    { label:'MAX TESTER',    av:'TST',   avCls:'av-test',   color:'var(--test)'  },
+  WRITER:    { label:'MAX WRITER',    av:'WRT',   avCls:'av-write',  color:'var(--write)' },
+};
+
+const STAGE_HINT = {
+  idle:               '● idle — waiting for idea',
+  await_arch_approval:'● architect done — approve or improve',
+  await_build_approval:'● builder done — approve or improve',
+  tester:             '⚙ tester running...',
+  writer:             '⚙ writer running...',
+  done:               '✓ pipeline complete — start new project',
+};
+
+const AGENT_FOR_STAGE = {
+  await_arch_approval:  'ARCHITECT',
+  await_build_approval: 'BUILDER',
+  tester:               'TESTER',
+  writer:               'WRITER',
+  done:                 'WRITER',
+};
+
+marked.setOptions({breaks:true, gfm:true});
+
+// ── Ping ─────────────────────────────────────────────
+async function ping(){
+  try{
+    const r = await fetch(API+'/state',{signal:AbortSignal.timeout(2000)});
+    if(r.ok){ setConn(true); const d=await r.json(); syncState(d); }
+    else setConn(false);
+  }catch{ setConn(false); }
+}
+function setConn(ok){
+  document.getElementById('conn-dot').className = 'conn-dot'+(ok?'':' off');
+  document.getElementById('conn-label').textContent = ok ? 'flask:5000' : 'offline';
+}
+ping(); setInterval(ping,12000);
+
+function syncState(d){
+  currentStage = d.stage;
+  updateTracker(d.stage, d.pipeline_status || {});
+  updateStageHint(d.stage);
+}
+
+// ── Tracker ───────────────────────────────────────────
+const STAGE_ORDER = ['ARCHITECT','BUILDER','TESTER','WRITER'];
+const STAGE_MAP   = {
+  architect:'ARCHITECT', await_arch_approval:'ARCHITECT',
+  builder:'BUILDER',     await_build_approval:'BUILDER',
+  tester:'TESTER', writer:'WRITER', done:'WRITER'
+};
+
+function updateTracker(stage, status){
+  const active = STAGE_MAP[stage];
+  STAGE_ORDER.forEach(s => {
+    const el = document.getElementById('step-'+s);
+    el.className = 'track-step';
+    const isDone = status[ s.toLowerCase().replace('builder','build').replace('tester','test').replace('writer','write') ];
+    if(isDone && s !== active){ el.classList.add('done'); return; }
+    if(s === active){
+      const isRunning = ['architect','builder','tester','writer'].includes(stage);
+      el.classList.add('active','active-'+s);
+      if(isRunning) el.classList.add('running');
+    }
+  });
+}
+
+function updateStageHint(stage){
+  const el = document.getElementById('stage-hint');
+  el.textContent = STAGE_HINT[stage] || '● '+stage;
+  const cls = {
+    idle:'idle', await_arch_approval:'architect', await_build_approval:'builder',
+    tester:'tester', writer:'writer', done:'done'
+  }[stage] || 'idle';
+  el.className = 'stage-hint '+cls;
+}
+
+// ── Input helpers ─────────────────────────────────────
+function resize(el){
+  el.style.height='auto';
+  el.style.height=Math.min(el.scrollHeight,120)+'px';
+}
+function handleKey(e){
+  if(e.key==='Enter'&&!e.altKey&&!e.shiftKey){e.preventDefault();send();}
+}
+function now(){
+  return new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+}
+
+// ── Send ──────────────────────────────────────────────
+async function send(override){
+  if(busy) return;
+  const el = document.getElementById('input');
+  const text = override || el.value.trim();
+  if(!text) return;
+
+  if(!override){ el.value=''; el.style.height='auto'; }
+
+  hideWelcome();
+  removeApprovalBar();
+  addUserMsg(text);
+
+  const thinkAgent = AGENT_FOR_STAGE[currentStage] || 'ARCHITECT';
+  const th = addThinking(thinkAgent, currentStage);
+
+  busy = true;
+  document.getElementById('send-btn').disabled = true;
+
+  try{
+    const res = await fetch(API+'/chat',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({message:text})
+    });
+    if(!res.ok){
+      const err=await res.json().catch(()=>({}));
+      throw new Error(err.error||`HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    th.remove();
+
+    currentStage   = data.stage;
+    currentWaiting = data.waiting_for;
+
+    updateTracker(data.stage, data.pipeline_status || {});
+    updateStageHint(data.stage);
+
+    addAgentMsg(data.agent, data.message);
+
+    if(data.waiting_for === 'approval'){
+      addApprovalBar(data.agent, data.stage);
+    }
+
+  }catch(err){
+    th.remove();
+    toast('Error: '+err.message);
+  }
+
+  busy = false;
+  document.getElementById('send-btn').disabled = false;
+  scrollDown();
+}
+
+// Quick approve button
+function quickApprove(){
+  removeApprovalBar();
+  send('approved');
+}
+
+// ── Reset ────────────────────────────────────────────
+async function doReset(){
+  await fetch(API+'/reset',{method:'POST'}).catch(()=>{});
+  currentStage='idle'; currentWaiting=null;
+  const msgs = document.getElementById('messages');
+  msgs.innerHTML = `
+    <div class="welcome" id="welcome">
+      <div class="welcome-logo">MAX<em>.</em>sys</div>
+      <div class="welcome-sub">Session reset. Describe a new project idea to begin.</div>
+      <div class="flow-diagram">
+        <div class="flow-node" style="color:var(--arc);border-color:rgba(88,166,255,0.4)">ARCHITECT</div>
+        <span class="flow-arrow">→</span><span class="flow-check">✋</span><span class="flow-arrow">→</span>
+        <div class="flow-node" style="color:var(--build);border-color:rgba(63,185,80,0.4)">BUILDER</div>
+        <span class="flow-arrow">→</span><span class="flow-check">✋</span><span class="flow-arrow">→</span>
+        <div class="flow-node" style="color:var(--test);border-color:rgba(227,179,65,0.4)">TESTER</div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-node" style="color:var(--write);border-color:rgba(188,140,255,0.4)">WRITER</div>
+      </div>
+    </div>
+  `;
+  STAGE_ORDER.forEach(s=>{
+    const el = document.getElementById('step-'+s);
+    el.className='track-step';
+  });
+  updateStageHint('idle');
+}
+
+// ── DOM builders ─────────────────────────────────────
+function hideWelcome(){
+  const w=document.getElementById('welcome'); if(w) w.remove();
+}
+
+function removeApprovalBar(){
+  const ab=document.getElementById('approval-bar'); if(ab) ab.remove();
+}
+
+function addUserMsg(text){
+  const msgs=document.getElementById('messages');
+  const row=document.createElement('div');
+  row.className='msg user-msg';
+  row.innerHTML=`
+    <div class="msg-body">
+      <div class="msg-meta">
+        <span class="meta-name meta-user">you</span>
+        <span class="meta-time">${now()}</span>
+      </div>
+      <div class="bubble">${esc(text)}</div>
+    </div>
+    <div class="avatar av-user">YOU</div>
+  `;
+  msgs.appendChild(row);
+  scrollDown();
+}
+
+function addAgentMsg(agent, text){
+  if(!agent) return;
+  const msgs=document.getElementById('messages');
+  const meta=AGENT_META[agent]||AGENT_META.ARCHITECT;
+  const row=document.createElement('div');
+  row.className='msg';
+  row.innerHTML=`
+    <div class="avatar ${meta.avCls}">${meta.av}</div>
+    <div class="msg-body">
+      <div class="msg-meta">
+        <span class="meta-name meta-${agent}">${meta.label}</span>
+        <span class="meta-time">${now()}</span>
+      </div>
+      <div class="bubble">
+        <div class="agent-tag tag-${agent}">⬡ ${agent}</div>
+        <div class="md"></div>
+      </div>
+    </div>
+  `;
+  msgs.appendChild(row);
+  renderMd(row.querySelector('.md'), text);
+  scrollDown();
+}
+
+function addApprovalBar(agent, stage){
+  removeApprovalBar();
+  const agentLabel = {
+    ARCHITECT: 'architecture plan',
+    BUILDER:   'generated code',
+    TESTER:    'test report',
+    WRITER:    'documentation',
+  }[agent] || 'output';
+
+  const nextStep = {
+    ARCHITECT: '→ hand off to Builder',
+    BUILDER:   '→ run Tester + Writer automatically',
+  }[agent] || '';
+
+  const msgs=document.getElementById('messages');
+  const bar=document.createElement('div');
+  bar.className='approval-bar';
+  bar.id='approval-bar';
+  bar.innerHTML=`
+    <div class="approval-text">
+      <strong>Review the ${agentLabel}</strong>
+      Approve to continue ${nextStep} · or type feedback below to request improvements
+    </div>
+    <button class="feedback-btn" onclick="focusInput()">✏ Improve</button>
+    <button class="approve-btn" onclick="quickApprove()">✓ Approve</button>
+  `;
+  msgs.appendChild(bar);
+  scrollDown();
+}
+
+function addThinking(agent, stage){
+  const msgs=document.getElementById('messages');
+  const meta=AGENT_META[agent]||AGENT_META.ARCHITECT;
+  const stageLabels={
+    idle:'starting architect...',
+    await_arch_approval:'revising architecture...',
+    await_build_approval:'revising build...',
+    architect:'designing architecture...',
+    builder:'building project...',
+    tester:'running tests...',
+    writer:'writing documentation...',
+  };
+  const row=document.createElement('div');
+  row.className='thinking';
+  row.innerHTML=`
+    <div class="avatar ${meta.avCls}">${meta.av}</div>
+    <div class="thinking-bubble">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <span>${stageLabels[stage]||'working...'}</span>
+      <span class="thinking-stage tag-${agent}" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:2px 7px;border-radius:3px;border:1px solid;color:${meta.color};border-color:${meta.color}33;">${agent}</span>
+    </div>
+  `;
+  msgs.appendChild(row);
+  scrollDown();
+  return row;
+}
+
+// ── Markdown + code ───────────────────────────────────
+function renderMd(container, text){
+  container.innerHTML = marked.parse(text);
+  container.querySelectorAll('pre code').forEach(block=>{
+    const lang=(block.className.match(/language-(\w+)/)||[])[1]||'code';
+    const wrap=document.createElement('div'); wrap.className='cw';
+    const head=document.createElement('div'); head.className='ch';
+    const langEl=document.createElement('span'); langEl.className='clang'; langEl.textContent=lang;
+    const btn=document.createElement('button'); btn.className='cpbtn'; btn.textContent='copy';
+    btn.onclick=()=>{ navigator.clipboard.writeText(block.textContent).then(()=>{ btn.textContent='copied ✓'; btn.classList.add('ok'); setTimeout(()=>{btn.textContent='copy';btn.classList.remove('ok');},2000); }); };
+    head.appendChild(langEl); head.appendChild(btn);
+    const pre=block.parentElement;
+    pre.parentNode.insertBefore(wrap,pre);
+    wrap.appendChild(head); wrap.appendChild(pre);
+    hljs.highlightElement(block);
+  });
+}
+
+// ── Utils ─────────────────────────────────────────────
+function scrollDown(){
+  const m=document.getElementById('messages'); m.scrollTop=m.scrollHeight;
+}
+function focusInput(){
+  document.getElementById('input').focus();
+}
+function esc(s){
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+}
+function toast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.style.display='block';
+  setTimeout(()=>{t.style.display='none';},4000);
+}
+</script>
+</body>
+</html>
