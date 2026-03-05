@@ -1,0 +1,64 @@
+:root {
+    --bg: #f0f0f0;
+    --btn-bg: #ffffff;
+    --btn-fg: #000000;
+    --display-bg: #f5f5f5;
+}
+
+/* Global page styling */
+body {
+    font-family: Arial, sans-serif;
+    background-color: var(--bg);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+}
+
+/* Calculator container */
+#calculator {
+    width: 300px;
+    background-color: var(--display-bg);
+    padding: 20px;
+    border-radius: 10px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+}
+
+/* Display area */
+#display {
+    width: 100%;
+    height: 40px;
+    background-color: var(--display-bg);
+    border: none;
+    padding: 10px;
+    font-size: 24px;
+    text-align: right;
+    margin-bottom: 20px;
+}
+
+/* Button grid */
+.button-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+}
+
+/* Individual buttons */
+button {
+    background-color: var(--btn-bg);
+    color: var(--btn-fg);
+    border: none;
+    padding: 10px;
+    font-size: 18px;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+/* Hover & focus styles for better UX & accessibility */
+button:hover {
+    background-color: #e0e0e0;
+}
+button:focus-visible {
+    outline: 2px solid #000000;
+}

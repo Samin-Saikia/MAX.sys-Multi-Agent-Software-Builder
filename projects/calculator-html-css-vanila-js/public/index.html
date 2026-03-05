@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Calculator App</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="calculator">
+        <div id="display" aria-live="polite"></div>
+        <div class="button-grid">
+            <!-- Row 1 -->
+            <button data-action="clear">C</button>
+            <button data-action="backspace">←</button>
+            <button data-action="operator" data-value="/">÷</button>
+            <!-- Row 2 -->
+            <button data-action="operator" data-value="*">×</button>
+            <button data-action="digit" data-value="7">7</button>
+            <button data-action="digit" data-value="8">8</button>
+            <button data-action="digit" data-value="9">9</button>
+            <!-- Row 3 -->
+            <button data-action="operator" data-value="-">-</button>
+            <button data-action="digit" data-value="4">4</button>
+            <button data-action="digit" data-value="5">5</button>
+            <button data-action="digit" data-value="6">6</button>
+            <!-- Row 4 -->
+            <button data-action="operator" data-value="+">+</button>
+            <button data-action="digit" data-value="1">1</button>
+            <button data-action="digit" data-value="2">2</button>
+            <button data-action="digit" data-value="3">3</button>
+            <!-- Row 5 -->
+            <button data-action="decimal">.</button>
+            <button data-action="digit" data-value="0">0</button>
+            <button data-action="equals">=</button>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>

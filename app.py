@@ -7,6 +7,7 @@ import subprocess
 import threading
 import queue
 import time
+import socket
 from pathlib import Path
 from flask import Flask, request, jsonify, send_from_directory, send_file, Response, stream_with_context
 from flask_cors import CORS
@@ -32,11 +33,14 @@ MAX_TOKENS    = 4096
 PROJECTS_DIR  = Path("./projects")
 PROJECTS_DIR.mkdir(exist_ok=True)
 
+SESSION_FILE  = Path("./session.json")    # current active pipeline state
+HISTORY_FILE  = Path("./history.json")    # index of all past completed projects
+
 # =========================
 # PIPELINE STATE
 # =========================
 
-pipeline = {
+PIPELINE_DEFAULTS = {
     "stage":        "idle",
     "idea":         "",
     "arch_doc":     "",
@@ -49,13 +53,86 @@ pipeline = {
     "project_path": "",
     "run_port":     None,
     "run_pid":      None,
-    "project_type": "",   # "static" | "flask" | "node" | "other"
-    "preview_url":  "",   # always served via MAX at /preview/...
+    "project_type": "",
+    "preview_url":  "",
 }
 
 # Per-project log queue (for SSE streaming)
 log_queue: queue.Queue = queue.Queue()
-active_process = None
+active_process  = None
+app_ready_event = threading.Event()   # set when subprocess port accepts connections
+
+# =========================
+# PERSISTENCE
+# =========================
+
+def _default_pipeline():
+    """Return a fresh copy of the default pipeline dict."""
+    import copy
+    return copy.deepcopy(PIPELINE_DEFAULTS)
+
+
+def save_session():
+    """Write current pipeline state to session.json."""
+    try:
+        data = {k: v for k, v in pipeline.items()}
+        SESSION_FILE.write_text(json.dumps(data, indent=2, default=str))
+    except Exception as e:
+        print(f"[persist] save_session error: {e}")
+
+
+def load_session():
+    """
+    Load pipeline state from session.json on startup.
+    Merges saved fields into the live pipeline dict.
+    Skips run_pid (process is dead after restart).
+    """
+    if not SESSION_FILE.exists():
+        return
+    try:
+        data = json.loads(SESSION_FILE.read_text())
+        for k, v in data.items():
+            if k in pipeline and k != "run_pid":
+                pipeline[k] = v
+        # After restart the subprocess is dead — mark accordingly
+        pipeline["run_pid"] = None
+        # If we were mid-run, drop back to done so user can review
+        if pipeline["stage"] in ("running", "tester", "writer"):
+            pipeline["stage"] = "done"
+        print(f"[persist] session restored — stage: {pipeline['stage']}, project: {pipeline['project_name'] or 'none'}")
+    except Exception as e:
+        print(f"[persist] load_session error: {e}")
+
+
+def save_history_entry():
+    """
+    Append a completed project record to history.json.
+    Called once when the pipeline reaches 'done'.
+    """
+    if not pipeline.get("project_name"):
+        return
+    try:
+        entries = []
+        if HISTORY_FILE.exists():
+            entries = json.loads(HISTORY_FILE.read_text())
+        entry = {
+            "id":           len(entries) + 1,
+            "timestamp":    time.strftime("%Y-%m-%d %H:%M:%S"),
+            "project_name": pipeline["project_name"],
+            "project_type": pipeline["project_type"],
+            "preview_url":  pipeline["preview_url"],
+            "idea":         pipeline["idea"],
+            "stage":        "done",
+        }
+        # Avoid duplicate entries for the same project
+        entries = [e for e in entries if e.get("project_name") != pipeline["project_name"]]
+        entries.insert(0, entry)        # newest first
+        HISTORY_FILE.write_text(json.dumps(entries, indent=2))
+    except Exception as e:
+        print(f"[persist] save_history_entry error: {e}")
+
+
+pipeline = _default_pipeline()
 
 # =========================
 # PROMPTS
@@ -76,7 +153,7 @@ Include:
 7. **Dependencies** — all packages (with versions if possible)
 8. **Implementation Notes** — patterns, edge cases, gotchas for the builder
 
-Also include a line at the top:
+Also include at the very top:
 PROJECT_NAME: <slug-name-for-folder>
 RUN_COMMAND: <exact command to run the project, e.g. python app.py or npm start>
 INSTALL_COMMAND: <exact install command, e.g. pip install -r requirements.txt or npm install>
@@ -287,30 +364,84 @@ def parse_files_from_build(build_output):
     return files
 
 
+def _slug(text: str, maxlen: int = 32) -> str:
+    """Convert any string into a clean lowercase slug."""
+    text = text.lower().strip()
+    text = re.sub(r'[^\w\s\-]', '', text)
+    text = re.sub(r'[\s_]+', '-', text)
+    text = re.sub(r'-+', '-', text)
+    text = text.strip('-')
+    return text[:maxlen] or "project"
+
+
+def _name_from_idea(idea: str) -> str:
+    """Derive a meaningful slug from the user's idea. e.g. 'build a todo app with flask' -> 'todo-app-flask'"""
+    STOPWORDS = {
+        'a','an','the','and','or','but','in','on','at','to','for','of','with',
+        'by','from','up','about','into','through','build','create','make',
+        'write','generate','i','me','my','we','us','you','it','its','that',
+        'this','just','please','can','could','would','should','will','using',
+        'use','simple','basic','small','new','add','some','also',
+    }
+    words = re.sub(r'[^\w\s]', ' ', idea.lower()).split()
+    meaningful = [w for w in words if w not in STOPWORDS and len(w) > 1][:5]
+    if not meaningful:
+        meaningful = [w for w in words if len(w) > 1][:4]
+    return '-'.join(meaningful) or "project"
+
+
+def _unique_project_name(base: str) -> str:
+    """If projects/base/ already exists, append -2, -3, etc."""
+    candidate = base
+    counter = 2
+    while (PROJECTS_DIR / candidate).exists():
+        candidate = f"{base}-{counter}"
+        counter += 1
+    return candidate
+
+
 def extract_arch_meta(arch_doc: str) -> dict:
-    """Extract PROJECT_NAME, RUN_COMMAND, INSTALL_COMMAND, PORT from arch doc."""
+    """Extract PROJECT_NAME, RUN_COMMAND, INSTALL_COMMAND, PORT from arch doc.
+    Falls back to deriving a unique name from the user idea."""
     meta = {
-        "project_name":    "max-project",
+        "project_name":    "",
         "run_command":     None,
         "install_command": None,
         "port":            5001,
     }
+    found_name = ""
+    GENERIC = {"max-project","project","my-project","app","my-app","web-app",
+               "flask-app","node-app","application","example","new-project"}
+
     for line in arch_doc.splitlines():
         line = line.strip()
         if line.startswith("PROJECT_NAME:"):
             raw = line.split(":", 1)[1].strip()
-            # sanitize to valid folder name
-            meta["project_name"] = re.sub(r'[^\w\-]', '-', raw).lower()[:40]
+            slug = _slug(raw)
+            if slug and slug not in GENERIC:
+                found_name = slug
         elif line.startswith("RUN_COMMAND:"):
-            meta["run_command"] = line.split(":", 1)[1].strip()
+            val = line.split(":", 1)[1].strip()
+            meta["run_command"] = None if val.lower() in ("none","","n/a") else val
         elif line.startswith("INSTALL_COMMAND:"):
-            meta["install_command"] = line.split(":", 1)[1].strip()
+            val = line.split(":", 1)[1].strip()
+            meta["install_command"] = None if val.lower() in ("none","","n/a") else val
         elif line.startswith("PORT:"):
-            try:
-                meta["port"] = int(line.split(":", 1)[1].strip())
-            except ValueError:
-                pass
+            val = line.split(":", 1)[1].strip()
+            if val.lower() not in ("none","","n/a"):
+                try:
+                    meta["port"] = int(val)
+                except ValueError:
+                    pass
+
+    if not found_name:
+        found_name = _name_from_idea(pipeline.get("idea", ""))
+        _log(f"  PROJECT_NAME missing from arch — derived from idea: {found_name}")
+
+    meta["project_name"] = _unique_project_name(found_name)
+    _log(f"  Project name: {meta['project_name']}")
     return meta
+
 
 # =========================
 # FILE WRITER
@@ -338,14 +469,41 @@ def _log(line: str):
     ts = time.strftime("%H:%M:%S")
     log_queue.put(f"[{ts}] {line}")
 
+def _port_open(port: int) -> bool:
+    """Return True if something is listening on 127.0.0.1:port."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def _wait_for_port(port: int, timeout: int = 60) -> bool:
+    """
+    Poll until port is open or timeout (seconds) is reached.
+    Returns True if port opened in time.
+    """
+    deadline = time.time() + timeout
+    interval = 0.3
+    while time.time() < deadline:
+        if _port_open(port):
+            return True
+        time.sleep(interval)
+        interval = min(interval * 1.4, 2.0)   # gentle exponential back-off, cap at 2s
+    return False
+
+
 def run_project(project_path: Path, install_cmd, run_cmd, port: int):
     global active_process
+    app_ready_event.clear()
     _log("─── Starting project runner ───")
 
     env = os.environ.copy()
     env["PORT"] = str(port)
+    # Make sure Flask/Uvicorn bind to the right port when using env var
+    env["FLASK_RUN_PORT"] = str(port)
 
-    # Install deps
+    # ── Install deps ──────────────────────────────────────────────────────────
     if install_cmd:
         _log(f"$ {install_cmd}")
         try:
@@ -365,10 +523,10 @@ def run_project(project_path: Path, install_cmd, run_cmd, port: int):
             _log(f"✗ Install error: {e}")
 
     if not run_cmd:
-        _log("⚠ No run command found — files written but not started")
+        _log("⚠ No run command — files written but not started")
         return
 
-    # Stop previous process
+    # ── Stop any previous process ─────────────────────────────────────────────
     if active_process and active_process.poll() is None:
         _log("Stopping previous process...")
         active_process.terminate()
@@ -377,6 +535,7 @@ def run_project(project_path: Path, install_cmd, run_cmd, port: int):
         except subprocess.TimeoutExpired:
             active_process.kill()
 
+    # ── Start subprocess ──────────────────────────────────────────────────────
     _log(f"$ {run_cmd}  (port {port})")
     try:
         active_process = subprocess.Popen(
@@ -385,12 +544,25 @@ def run_project(project_path: Path, install_cmd, run_cmd, port: int):
             text=True, env=env
         )
         pipeline["run_pid"] = active_process.pid
-        _log(f"✓ Process started (PID {active_process.pid})")
+        _log(f"✓ Process started (PID {active_process.pid}) — waiting for port {port}...")
 
+        # ── Wait for port in a side thread so we can still stream logs ────────
+        def _watch_port():
+            if _wait_for_port(port, timeout=60):
+                app_ready_event.set()
+                _log(f"✓ App is up on port {port} — ready to preview")
+            else:
+                _log(f"✗ Timed out waiting for port {port} — check the terminal for errors")
+
+        watcher = threading.Thread(target=_watch_port, daemon=True)
+        watcher.start()
+
+        # Stream stdout while the app is running
         for line in active_process.stdout:
             _log(line.rstrip())
 
         active_process.wait()
+        app_ready_event.clear()
         _log(f"Process exited (code {active_process.returncode})")
     except Exception as e:
         _log(f"✗ Run error: {e}")
@@ -470,6 +642,7 @@ def do_architect(idea):
     pipeline["iteration"] = 0
     out = groq_call(ARCHITECT_MODEL, ARCHITECT_PROMPT, f"Project idea:\n{idea}")
     pipeline["arch_doc"] = out
+    save_session()
     return out
 
 def do_architect_improve(feedback):
@@ -477,6 +650,7 @@ def do_architect_improve(feedback):
     out = groq_call(ARCHITECT_MODEL, ARCHITECT_IMPROVE_PROMPT,
                     f"Original architecture:\n{pipeline['arch_doc']}\n\nUser feedback:\n{feedback}")
     pipeline["arch_doc"] = out
+    save_session()
     return out
 
 def do_builder():
@@ -484,6 +658,7 @@ def do_builder():
     out = groq_call(BUILD_MODEL, BUILD_PROMPT,
                     f"Architecture Document:\n{pipeline['arch_doc']}")
     pipeline["build_output"] = out
+    save_session()
     return out
 
 def do_builder_improve(feedback):
@@ -493,12 +668,14 @@ def do_builder_improve(feedback):
                     f"Previous build:\n{pipeline['build_output']}\n\n"
                     f"User feedback:\n{feedback}")
     pipeline["build_output"] = out
+    save_session()
     return out
 
 def do_tester():
     out = groq_call(TEST_MODEL, TEST_PROMPT,
                     f"Architecture:\n{pipeline['arch_doc']}\n\nCodebase:\n{pipeline['build_output']}")
     pipeline["test_output"] = out
+    save_session()
     return out
 
 def do_writer():
@@ -507,6 +684,7 @@ def do_writer():
                     f"Codebase:\n{pipeline['build_output']}\n\n"
                     f"Test Report:\n{pipeline['test_output']}")
     pipeline["write_output"] = out
+    save_session()
     return out
 
 # =========================
@@ -563,6 +741,92 @@ def find_entry_html(project_path: Path) -> str:
     return ""
 
 
+def patch_flask_files(project_path: Path, port: int):
+    """
+    Fix common LLM-generated Flask issues before running:
+    1. Replace any hardcoded app.run(...) with the correct port, use_reloader=False
+    2. If no app.run() found, append one at the end of the main .py file
+    3. Ensure PORT env var is respected
+    """
+    py_files = sorted(project_path.rglob("*.py"))
+    patched = []
+
+    # Regex: match app.run(...) with any args, possibly multiline
+    run_re = re.compile(
+        r'(app\.run\s*\()([^)]*?)(\))',
+        re.DOTALL | re.IGNORECASE
+    )
+
+    for py_file in py_files:
+        try:
+            src = py_file.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+
+        if "flask" not in src.lower() and "Flask" not in src:
+            continue
+
+        original = src
+
+        # Replace ALL app.run(...) calls with correct port + no reloader
+        def fix_run(m):
+            return (f'{m.group(1)}host="0.0.0.0", port={port}, '
+                    f'debug=False, use_reloader=False{m.group(3)}')
+
+        src = run_re.sub(fix_run, src)
+
+        # If this file has Flask app but NO app.run at all, append a safe one
+        # (only for files that look like the entry point)
+        if ("Flask(__name__" in src or "Flask(__name__)" in src):
+            run_snippet = (
+                f'\n\nif __name__ == "__main__":\n'
+                f'    app.run(host="0.0.0.0", port={port}, debug=False, use_reloader=False)\n'
+            )
+            run_snippet_inline = (
+                f'\n    app.run(host="0.0.0.0", port={port}, debug=False, use_reloader=False)\n'
+            )
+            if "app.run(" not in src and "__main__" not in src:
+                src += run_snippet
+            elif "__main__" in src and "app.run(" not in src:
+                src = src.rstrip() + run_snippet_inline
+
+        if src != original:
+            py_file.write_text(src, encoding="utf-8")
+            rel = str(py_file.relative_to(project_path))
+            patched.append(rel)
+            _log(f"  patched: {rel} → port={port}, use_reloader=False")
+
+    if patched:
+        _log(f"✓ Patched {len(patched)} Python file(s) for correct port binding")
+    else:
+        _log("  (no app.run patches needed)")
+    return patched
+
+
+def find_run_command(project_path: Path, meta_cmd) -> str:
+    """
+    If the arch gave us a run command, use it.
+    Otherwise auto-detect the Flask entry file and build the command.
+    """
+    if meta_cmd:
+        return meta_cmd
+
+    # Look for main entry candidates
+    for name in ["app.py", "main.py", "run.py", "server.py", "wsgi.py"]:
+        if (project_path / name).exists():
+            return f"python {name}"
+
+    # Any .py that contains Flask
+    for f in sorted(project_path.rglob("*.py")):
+        try:
+            if "Flask" in f.read_text(errors="replace"):
+                return f"python {f.relative_to(project_path)}"
+        except Exception:
+            pass
+
+    return meta_cmd or ""
+
+
 def do_write_and_run():
     """Parse build output → write files → detect type → serve or run."""
     meta = extract_arch_meta(pipeline["arch_doc"])
@@ -588,29 +852,30 @@ def do_write_and_run():
     _log(f"✓ Project type detected: {ptype}")
 
     if ptype == "static":
-        # Serve directly via MAX — no subprocess needed
         entry = find_entry_html(project_path)
         preview = f"/preview/{project_name}/{entry}" if entry else f"/preview/{project_name}/"
         pipeline["preview_url"] = preview
         _log(f"✓ Static project — serving at {preview}")
 
     elif ptype in ("flask", "node"):
-        # Run in subprocess AND expose via MAX proxy
+        if ptype == "flask":
+            patch_flask_files(project_path, meta["port"])
+        run_cmd = find_run_command(project_path, meta["run_command"])
         pipeline["preview_url"] = f"/proxy/{project_name}/"
         t = threading.Thread(
             target=run_project,
-            args=(project_path, meta["install_command"], meta["run_command"], meta["port"]),
+            args=(project_path, meta["install_command"], run_cmd, meta["port"]),
             daemon=True
         )
         t.start()
-        _log(f"✓ {ptype} app — proxying :{ meta['port']} at /proxy/{project_name}/")
+        _log(f"✓ {ptype} app — proxying port {meta['port']} at /proxy/{project_name}/")
 
     else:
-        # Other (CLI etc) — just write files, no preview
         pipeline["preview_url"] = ""
+        run_cmd = find_run_command(project_path, meta["run_command"])
         t = threading.Thread(
             target=run_project,
-            args=(project_path, meta["install_command"], meta["run_command"], meta["port"]),
+            args=(project_path, meta["install_command"], run_cmd, meta["port"]),
             daemon=True
         )
         t.start()
@@ -641,6 +906,7 @@ def chat():
         out = do_architect(user_input)
         pipeline["stage"] = "await_arch_approval"
         log("agent", "ARCHITECT", out)
+        save_session()
         return make_response(out, waiting_for="approval", agent="ARCHITECT")
 
     if stage == "await_arch_approval":
@@ -650,10 +916,12 @@ def chat():
             out = do_builder()
             pipeline["stage"] = "await_build_approval"
             log("agent", "BUILDER", out)
+            save_session()
             return make_response(out, waiting_for="approval", agent="BUILDER")
         else:
             out = do_architect_improve(user_input)
             log("agent", "ARCHITECT", out)
+            save_session()
             return make_response(out, waiting_for="approval", agent="ARCHITECT")
 
     if stage == "await_build_approval":
@@ -679,6 +947,8 @@ def chat():
             )
             log("agent", "WRITER", write_out)
             pipeline["stage"] = "done"
+            save_session()
+            save_history_entry()
 
             return make_response(final, waiting_for=None, agent="WRITER", extras={
                 "project_running":  True,
@@ -690,6 +960,7 @@ def chat():
         else:
             out = do_builder_improve(user_input)
             log("agent", "BUILDER", out)
+            save_session()
             return make_response(out, waiting_for="approval", agent="BUILDER")
 
     if stage == "done":
@@ -698,6 +969,7 @@ def chat():
         out = do_architect(user_input)
         pipeline["stage"] = "await_arch_approval"
         log("agent", "ARCHITECT", out)
+        save_session()
         return make_response(out, waiting_for="approval", agent="ARCHITECT")
 
     return jsonify({"error": f"Unhandled stage: {stage}"}), 500
@@ -720,12 +992,16 @@ def logs():
 
 @app.route("/download")
 def download():
-    project_path = Path(pipeline.get("project_path", ""))
+    # Allow ?project=name to download any past project by folder name
+    project_name = request.args.get("project", "").strip() or pipeline.get("project_name", "")
+    if not project_name:
+        return jsonify({"error": "No project specified"}), 404
+    project_path = PROJECTS_DIR / project_name
     if not project_path.exists():
-        return jsonify({"error": "No project built yet"}), 404
+        return jsonify({"error": f"Project folder '{project_name}' not found"}), 404
     zip_path = build_zip(project_path)
     return send_file(str(zip_path), as_attachment=True,
-                     download_name=f"{pipeline['project_name']}.zip")
+                     download_name=f"{project_name}.zip")
 
 
 @app.route("/files")
@@ -768,43 +1044,107 @@ def serve_preview(project_name, filepath=""):
     return send_from_directory(str(project_path), filepath)
 
 
+@app.route("/app-status")
+def app_status():
+    """Frontend polls this to know when the subprocess port is actually open."""
+    port = pipeline.get("run_port")
+    if not port:
+        return jsonify({"ready": False, "reason": "no port"})
+    ready = _port_open(port)
+    return jsonify({
+        "ready":   ready,
+        "port":    port,
+        "ptype":   pipeline.get("project_type", ""),
+        "preview": pipeline.get("preview_url", ""),
+    })
+
+
 @app.route("/proxy/<project_name>/")
 @app.route("/proxy/<project_name>/<path:subpath>")
 def proxy_project(project_name, subpath=""):
-    """Reverse-proxy requests to the running subprocess on its port."""
+    """Reverse-proxy to the running subprocess. Retries a few times so a
+    slow-starting Flask app doesn't immediately 502."""
     import urllib.request, urllib.error
     port = pipeline.get("run_port") or 5001
     target = f"http://127.0.0.1:{port}/{subpath}"
     if request.query_string:
         target += "?" + request.query_string.decode()
-    try:
-        req = urllib.request.Request(
-            target,
-            data=request.get_data() or None,
-            headers={k: v for k, v in request.headers if k.lower() not in ("host", "content-length")},
-            method=request.method,
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            body    = resp.read()
-            status  = resp.status
-            headers = dict(resp.headers)
-            # Rewrite absolute URLs in HTML so relative links stay within proxy
-            ctype = headers.get("Content-Type", "")
-            if "html" in ctype:
-                body = body.replace(
-                    f"http://127.0.0.1:{port}".encode(),
-                    f"/proxy/{project_name}".encode()
-                )
-            from flask import make_response as mk
-            r = mk(body, status)
-            for h in ("Content-Type", "Content-Encoding"):
-                if h in headers:
-                    r.headers[h] = headers[h]
-            return r
-    except urllib.error.URLError as e:
-        return (f'<html><body style="font-family:monospace;background:#0d1117;color:#f85149;padding:20px">'
-                f'<h3>Proxy error — app may still be starting</h3><pre>{e}</pre>'
-                f'<p>Try refreshing in a moment.</p></body></html>'), 502
+
+    body_data = request.get_data() or None
+    req_headers = {k: v for k, v in request.headers
+                   if k.lower() not in ("host", "content-length", "transfer-encoding")}
+
+    last_err = None
+    for attempt in range(6):          # up to ~5s of retries
+        try:
+            req = urllib.request.Request(
+                target, data=body_data,
+                headers=req_headers,
+                method=request.method,
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                body    = resp.read()
+                status  = resp.status
+                headers = dict(resp.headers)
+                ctype   = headers.get("Content-Type", "")
+                if "html" in ctype:
+                    body = body.replace(
+                        f"http://127.0.0.1:{port}".encode(),
+                        f"/proxy/{project_name}".encode()
+                    )
+                    body = body.replace(
+                        f"http://localhost:{port}".encode(),
+                        f"/proxy/{project_name}".encode()
+                    )
+                from flask import make_response as mk
+                r = mk(body, status)
+                for h in ("Content-Type", "Content-Encoding"):
+                    if h in headers:
+                        r.headers[h] = headers[h]
+                return r
+        except urllib.error.URLError as e:
+            last_err = e
+            if attempt < 5:
+                time.sleep(1.0)       # wait 1s between retries
+            continue
+        except Exception as e:
+            last_err = e
+            break
+
+    # All retries exhausted — return a friendly auto-refresh page
+    return (
+        f'''<!DOCTYPE html><html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body {{font-family:'IBM Plex Mono',monospace;background:#0d1117;color:#cdd9e5;
+           display:flex;align-items:center;justify-content:center;height:100vh;margin:0;flex-direction:column;gap:16px;}}
+    .spinner {{width:32px;height:32px;border:3px solid #2e3740;border-top-color:#3fb950;
+               border-radius:50%;animation:spin 0.8s linear infinite;}}
+    @keyframes spin {{to{{transform:rotate(360deg)}}}}
+    h3 {{color:#3fb950;margin:0;font-size:14px;letter-spacing:.06em;}}
+    p  {{color:#56697a;font-size:11px;margin:0;}}
+    button {{font-family:inherit;font-size:11px;background:none;border:1px solid #2e3740;
+             color:#56697a;padding:6px 14px;border-radius:5px;cursor:pointer;margin-top:4px;}}
+    button:hover{{color:#cdd9e5;border-color:#56697a;}}
+  </style>
+</head>
+<body>
+  <div class="spinner"></div>
+  <h3>App is starting up...</h3>
+  <p>Port {port} — retrying automatically</p>
+  <button onclick="location.reload()">↻ Refresh now</button>
+  <script>
+    // Auto-refresh every 2s until the app responds
+    (function poll(){{
+      fetch('/app-status').then(r=>r.json()).then(d=>{{
+        if(d.ready) location.reload();
+        else setTimeout(poll, 2000);
+      }}).catch(()=>setTimeout(poll, 2000));
+    }})();
+  </script>
+</body></html>''', 200    # return 200 so iframe renders it
+    )
 
 
 @app.route("/stop", methods=["POST"])
@@ -860,13 +1200,67 @@ def get_state():
 
 
 def _reset():
-    for k in ["stage","idea","arch_doc","build_output","test_output","write_output",
-              "project_name","project_path","run_port","run_pid","project_type","preview_url"]:
-        pipeline[k] = "" if k not in ("stage","run_port","run_pid") else \
-                      ("idle" if k == "stage" else None)
-    pipeline["history"]   = []
-    pipeline["iteration"] = 0
+    fresh = _default_pipeline()
+    for k in fresh:
+        pipeline[k] = fresh[k]
+    # Remove session file so a fresh server start is truly clean
+    try:
+        if SESSION_FILE.exists():
+            SESSION_FILE.unlink()
+    except Exception:
+        pass
+
+
+@app.route("/history", methods=["GET"])
+def get_history():
+    """Return the index of all completed past projects."""
+    try:
+        if HISTORY_FILE.exists():
+            return jsonify(json.loads(HISTORY_FILE.read_text()))
+    except Exception:
+        pass
+    return jsonify([])
+
+
+@app.route("/history/<int:entry_id>/load", methods=["POST"])
+def load_history_entry(entry_id):
+    """
+    Restore a past project's pipeline state from history.
+    The project folder must still exist on disk.
+    """
+    try:
+        if not HISTORY_FILE.exists():
+            return jsonify({"error": "No history found"}), 404
+        entries = json.loads(HISTORY_FILE.read_text())
+        entry = next((e for e in entries if e.get("id") == entry_id), None)
+        if not entry:
+            return jsonify({"error": "Entry not found"}), 404
+
+        project_path = PROJECTS_DIR / entry["project_name"]
+        if not project_path.exists():
+            return jsonify({"error": "Project folder no longer exists on disk"}), 404
+
+        # Restore just the metadata — not the raw LLM outputs (they can be large)
+        pipeline["stage"]        = "done"
+        pipeline["project_name"] = entry["project_name"]
+        pipeline["project_path"] = str(project_path)
+        pipeline["project_type"] = entry.get("project_type", "")
+        pipeline["preview_url"]  = entry.get("preview_url", "")
+        pipeline["idea"]         = entry.get("idea", "")
+        pipeline["run_port"]     = None
+        pipeline["run_pid"]      = None
+        save_session()
+
+        return jsonify({
+            "status":       "loaded",
+            "project_name": entry["project_name"],
+            "project_type": entry["project_type"],
+            "preview_url":  entry["preview_url"],
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
+    load_session()   # restore previous session on startup
     app.run(debug=True, port=5000, threaded=True)
